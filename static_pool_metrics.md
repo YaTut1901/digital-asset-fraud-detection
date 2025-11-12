@@ -42,20 +42,23 @@
 | 39 | token0_owner_gas_burnt     | Amount of gas burnt by first token owner address                                                  | Dune sum of gasUsed (per direction rule above)                                       | Integer          | Dune                   | ✅ |
 | 40 | token1_owner_gas_burnt     | Amount of gas burnt by second token owner address                                                 | Dune sum of gasUsed (per direction rule above)                                       | Integer          | Dune                   | ✅ |
 | 41 | pool_deployer_gas_burnt    | Amount of gas burnt by pool deployer address                                                      | Dune sum of gasUsed (per direction rule above)                                       | Integer          | Dune                   | ✅ |
-| 42 | token0_top_10_holders_percent | Supply of first token owned by top 10 holders in percent                                       | Calculate percent of summed top 10 holders supply at pool creation                   | Float (%)        | Bitquery               | |
-| 43 | token1_top_10_holders_percent | Supply of second token owned by top 10 holders in percent                                      | Calculate percent of summed top 10 holders supply at pool creation                   | Float (%)        | Bitquery               | |
-| 44 | token0_num_holder_launch   | Number of first token holders at the moment of pool creation                                     | Count holders at pool creation                                                       | Integer          | Bitquery               | |
-| 45 | token1_num_holder_launch   | Number of second token holders at the moment of pool creation                                    | Count holders at pool creation                                                       | Integer          | Bitquery               | |
-| 46 | token0_liquidity_depth     | Percent of first token total supply locked in pool                                                | balanceOf(pool) at creation / totalSupply at same block *100                         | Float (%)        | RPC                    | |
-| 47 | token1_liquidity_depth     | Percent of second token total supply locked in pool                                               | balanceOf(pool) at creation / totalSupply at same block *100                         | Float (%)        | RPC                    | |
-| 48 | label                      | Whether pool contains fraud asset                                                                 | True if one token is labeled as scam, false if both are trustworthy or in lists, etc.| Boolean          | CSV                    | |
+| 42 | token0_top_10_holders_percent | Supply of first token owned by top 10 holders in percent                                       | Calculate percent of summed top 10 holders supply at pool creation                   | Float (%)        | Bitquery               | ✅ |
+| 43 | token1_top_10_holders_percent | Supply of second token owned by top 10 holders in percent                                      | Calculate percent of summed top 10 holders supply at pool creation                   | Float (%)        | Bitquery               | ✅ |
+| 44 | token0_num_holder_launch   | Number of first token holders at the moment of pool creation                                     | Count holders at pool creation                                                       | Integer          | Bitquery               | ✅ |
+| 45 | token1_num_holder_launch   | Number of second token holders at the moment of pool creation                                    | Count holders at pool creation                                                       | Integer          | Bitquery               | ✅ |
+| 46 | token0_liquidity_depth     | Percent of first token total supply locked in pool                                                | balanceOf(pool) at creation / totalSupply at same block *100                         | Float (%)        | RPC                    | ✅ |
+| 47 | token1_liquidity_depth     | Percent of second token total supply locked in pool                                               | balanceOf(pool) at creation / totalSupply at same block *100                         | Float (%)        | RPC                    | ✅ |
+| 48 | label                      | Whether pool contains fraud asset                                                                 | 1 if at least one token is labeled as scam, 0 if both are trustworthy or in https://tokens.uniswap.org/, if 1 truthworthy and other is undefined then take scam_rate | Float          | CSV                    | ✅ |
 
 ## Pseudocode: Single Pool Metrics (batched, cached; one call per metric)
 
 ```python
 def calculate_metrics_for_token_list(csv_path):
     # Read tokens from categorized_tokens.csv
-    tokens = load_categorized_tokens(csv_path)  # returns [token_address, name, symbol, label]
+    tokens = load_categorized_tokens(csv_path)  # returns {token_address -> [name, symbol, label]
+
+    # Calculate scam rate as scams/all
+    scam_rate = calculate_scam_rate(tokens)
 
     # Constants 
     chain_name = "ethereum"
@@ -68,11 +71,15 @@ def calculate_metrics_for_token_list(csv_path):
     # Uniswap v3: pools
     v3_pools_by_token = graph_batch_list_v3_pools_for_tokens(tokens)   # {token -> [pool_address, pool_creation_timestamp, token0_address, token1_address, token0_name, token1_name, token0_symbol, token1_symbol]}
 
+
     # Build the global set of pools for processing
     all_pools = list()
     for t in tokens:
         for p in v2_pairs_by_token.get(t, []): all_pools.add(p)
         for p in v3_pools_by_token.get(t, []): all_pools.add(p)
+
+    # Fetch pool reserves in both tokens at the creation block (TODO: test if reserves at creation block are not 0 for each token. if yes then fetch daa for a couple of blocks later)
+    token_reserves_by_pool = graph_fetch_token_reserves(all_pools, creations)  # {poolId -> {token_address -> reserve}}
 
     # Build a set of unique addresses from all collected pools
     unique_addresses = set()
@@ -107,6 +114,12 @@ def calculate_metrics_for_token_list(csv_path):
     # Fetch tx data from Dune, if ownership is renounced (no owner in list) then fetch data for token deployer from creations
     # If address is a contract then calculate metrics on INCOMING txs, otherwise outgoing
     dune_data = dune_fetch_data(pool_deployers, token_owners, creations, is_contract)  # {address -> [tx_count, address_age, gas_burnt]}
+
+    # Fetch token holders from bitquery at pool creation block, calculate top_10_holders_percent and count num_holders
+    bitquery_data = bitquery_fetch_data(unique_addresses, token_data)   # {address -> [top_10_holders_percent, num_holders]}
+
+    # Fetch tokens from https://tokens.uniswap.org/
+    uniswap_verified_tokens = uniswap_web_fetch_data();
 
     results = []
     for pool in all_pools:
@@ -188,7 +201,7 @@ def calculate_metrics_for_token_list(csv_path):
 
         )
 
-        # ---- Address activity metrics via Dune (with owner->deployer fallback) ----
+        # ---- Address activity metrics via Dune (with owner -> deployer fallback) ----
         pool_deployer = pool_deployers.get(pool['pool_address'])
         token0_deployer = creations.get(token0_addr, {}).get('token_deployer')
         token1_deployer = creations.get(token1_addr, {}).get('token_deployer')
@@ -210,6 +223,21 @@ def calculate_metrics_for_token_list(csv_path):
         m['token0_owner_gas_burnt'] = dune_data.get(token0_owner_or_deployer, {}).get('gas_burnt') if token0_owner_or_deployer else None
         m['token1_owner_gas_burnt'] = dune_data.get(token1_owner_or_deployer, {}).get('gas_burnt') if token1_owner_or_deployer else None
         m['pool_deployer_gas_burnt'] = dune_data.get(pool_deployer, {}).get('gas_burnt') if pool_deployer else None
+
+        # Set the number of holders
+        m['token0_num_holders'] = bitquery_data.get(token0_addr, {}).get('num_holders')
+        m['token1_num_holders'] = bitquery_data.get(token1_addr, {}).get('num_holders')
+
+        # Set the top 10 percent holders metrics
+        m['token0_top_10_percent'] = bitquery_data.get(token0_addr, {}).get('top_10_percent')
+        m['token1_top_10_percent'] = bitquery_data.get(token1_addr, {}).get('top_10_percent')
+
+        # Set liquidity depth as the ratio of pool reserve to totalSupply
+        m['token0_liquidity_depth'] = (pool.get('reserve0', 0) / m['token0_totalSupply']) if m.get('token0_totalSupply') else None
+        m['token1_liquidity_depth'] = (pool.get('reserve1', 0) / m['token1_totalSupply']) if m.get('token1_totalSupply') else None
+
+        # Label
+        m['label'] = calculate_label()
 
         results.append(m)
 
