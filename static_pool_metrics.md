@@ -24,24 +24,24 @@
 | 21 | token1_ownership_renounced | Is ownership of the second token contract renounced?                                              | Use eth_call of owner(), via multicall/direct call                                   | Boolean          | RPC                    | ✅ |
 | 22 | token0_proxy               | Whether the first token uses a proxy                                                              | Etherscan getsourcecode, Proxy field check                                           | Boolean          | Etherscan              | ✅ |
 | 23 | token1_proxy               | Whether the second token uses a proxy                                                             | Etherscan getsourcecode, Proxy field check                                           | Boolean          | Etherscan              | ✅ |
-| 24 | token0_minting_enabled     | Can the first token be minted after deployment?                                                   | Check proxy, fetch bytecode, analyze with mythril for mint pattern                   | Boolean          | RPC, Mythril           | ✅ |
-| 25 | token1_minting_enabled     | Can the second token be minted after deployment?                                                  | Check proxy, fetch bytecode, analyze with mythril for mint pattern                   | Boolean          | RPC, Mythril           | ✅ |
-| 26 | token0_pausable            | If the first token has pausable functionality                                                     | Fetch proxy if present, bytecode, analyze with mythril for pause pattern             | Boolean          | RPC, Mythril           | ✅ |
-| 27 | token1_pausable            | If the second token has pausable functionality                                                    | Fetch proxy if present, bytecode, analyze with mythril for pause pattern             | Boolean          | RPC, Mythril           | ✅ |
-| 28 | token0_burning_enabled     | Can the first token be burned after deployment?                                                   | Fetch proxy if present, bytecode, analyze with mythril for burn pattern              | Boolean          | RPC, Mythril           | ✅ |
-| 29 | token1_burning_enabled     | Can the second token be burned after deployment?                                                  | Fetch proxy if present, bytecode, analyze with mythril for burn pattern              | Boolean          | RPC, Mythril           | ✅ |
-| 30 | token0_owner_is_contract   | Is the first token owner address a contract?                                                      | Call getCode on token owner address                                                  | Boolean          | RPC                    | ✅ |
-| 31 | token1_owner_is_contract   | Is the second token owner address a contract?                                                     | Call getCode on token owner address                                                  | Boolean          | RPC                    | ✅ |
-| 32 | pool_deployer_is_contract  | Is the pool deployer address a contract?                                                          | Call getCode on deployer address                                                     | Boolean          | RPC                    | ✅ |
-| 33 | token0_owner_tx_count      | Amount of transactions from the owner address                                                     | Dune aggregated tx count; if contract then incoming, else outgoing                   | Integer          | Dune                   | ✅ |
-| 34 | token1_owner_tx_count      | Amount of transactions from the owner address                                                     | Dune aggregated tx count; if contract then incoming, else outgoing                   | Integer          | Dune                   | ✅ |
-| 35 | pool_deployer_tx_count     | Amount of transactions from the pool deployer address                                             | Dune aggregated tx count; if contract then incoming, else outgoing                   | Integer          | Dune                   | ✅ |
-| 36 | token0_owner_age           | Time passed from first token owner address's first tx                                             | Dune earliest tx timestamp; compute minutes                                          | Integer (minutes)| Dune                   | ✅ |
-| 37 | token1_owner_age           | Time passed from second token owner address's first tx                                            | Dune earliest tx timestamp; compute minutes                                          | Integer (minutes)| Dune                   | ✅ |
-| 38 | pool_deployer_age          | Time passed from pool deployer address's first tx                                                 | Dune earliest tx timestamp; compute minutes                                          | Integer (minutes)| Dune                   | ✅ |
-| 39 | token0_owner_gas_burnt     | Amount of gas burnt by first token owner address                                                  | Dune sum of gasUsed (per direction rule above)                                       | Integer          | Dune                   | ✅ |
-| 40 | token1_owner_gas_burnt     | Amount of gas burnt by second token owner address                                                 | Dune sum of gasUsed (per direction rule above)                                       | Integer          | Dune                   | ✅ |
-| 41 | pool_deployer_gas_burnt    | Amount of gas burnt by pool deployer address                                                      | Dune sum of gasUsed (per direction rule above)                                       | Integer          | Dune                   | ✅ |
+| 24 | token0_owner_is_contract   | Is the first token owner address a contract?                                                      | Call getCode on token owner address                                                  | Boolean          | RPC                    | ✅ |
+| 25 | token1_owner_is_contract   | Is the second token owner address a contract?                                                     | Call getCode on token owner address                                                  | Boolean          | RPC                    | ✅ |
+| 26 | pool_deployer_is_contract  | Is the pool deployer address a contract?                                                          | Call getCode on deployer address                                                     | Boolean          | RPC                    | ✅ |
+| 27 | token0_owner_tx_count      | Amount of transactions from the owner address                                                     | Dune aggregated tx count; if contract then incoming, else outgoing                   | Integer          | Dune                   | ✅ |
+| 28 | token1_owner_tx_count      | Amount of transactions from the owner address                                                     | Dune aggregated tx count; if contract then incoming, else outgoing                   | Integer          | Dune                   | ✅ |
+| 29 | pool_deployer_tx_count     | Amount of transactions from the pool deployer address                                             | Dune aggregated tx count; if contract then incoming, else outgoing                   | Integer          | Dune                   | ✅ |
+| 30 | token0_owner_age           | Time passed from first token owner address's first tx                                             | Dune earliest tx timestamp; compute minutes                                          | Integer (minutes)| Dune                   | ✅ |
+| 31 | token1_owner_age           | Time passed from second token owner address's first tx                                            | Dune earliest tx timestamp; compute minutes                                          | Integer (minutes)| Dune                   | ✅ |
+| 32 | pool_deployer_age          | Time passed from pool deployer address's first tx                                                 | Dune earliest tx timestamp; compute minutes                                          | Integer (minutes)| Dune                   | ✅ |
+| 33 | token0_owner_gas_burnt     | Amount of gas burnt by first token owner address                                                  | Dune sum of gasUsed (per direction rule above)                                       | Integer          | Dune                   | ✅ |
+| 34 | token1_owner_gas_burnt     | Amount of gas burnt by second token owner address                                                 | Dune sum of gasUsed (per direction rule above)                                       | Integer          | Dune                   | ✅ |
+| 35 | pool_deployer_gas_burnt    | Amount of gas burnt by pool deployer address                                                      | Dune sum of gasUsed (per direction rule above)                                       | Integer          | Dune                   | ✅ |
+| 36 | token0_owner_bytes_deployed   | Total bytes of code deployed by the first token owner address                                   | Sum code size for all contracts created by the owner                                   | Integer (bytes)     | Dune, RPC               | ✅ |
+| 37 | token1_owner_bytes_deployed   | Total bytes of code deployed by the second token owner address                                  | Sum code size for all contracts created by the owner                                   | Integer (bytes)     | Dune, RPC               | ✅ |
+| 38 | pool_deployer_bytes_deployed  | Total bytes of code deployed by the pool deployer address                                       | Sum code size for all contracts created by the deployer                                | Integer (bytes)     | Dune, RPC               | ✅ |
+| 39 | token0_owner_smart_contracts_interacted | Number of unique smart contracts the first token owner has interacted with                | Dune SQL: count distinct contract addresses in 'to_address' for owner, filter out EOAs        | Integer             | Dune, RPC                | ✅ |
+| 40 | token1_owner_smart_contracts_interacted | Number of unique smart contracts the second token owner has interacted with               | Dune SQL: count distinct contract addresses in 'to_address' for owner, filter out EOAs        | Integer             | Dune, RPC                | ✅ |
+| 41 | pool_deployer_smart_contracts_interacted | Number of unique smart contracts the pool deployer has interacted with                    | Dune SQL: count distinct contract addresses in 'to_address' for deployer, filter out EOAs     | Integer             | Dune, RPC                | ✅ |
 | 42 | token0_top_10_holders_percent | Supply of first token owned by top 10 holders in percent                                       | Calculate percent of summed top 10 holders supply at pool creation                   | Float (%)        | Bitquery               | ✅ |
 | 43 | token1_top_10_holders_percent | Supply of second token owned by top 10 holders in percent                                      | Calculate percent of summed top 10 holders supply at pool creation                   | Float (%)        | Bitquery               | ✅ |
 | 44 | token0_num_holder_launch   | Number of first token holders at the moment of pool creation                                     | Count holders at pool creation                                                       | Integer          | Bitquery               | ✅ |
@@ -103,17 +103,14 @@ def calculate_metrics_for_token_list(csv_path):
     token_owners = call_fetch_current_owners(pools);  # {token_address -> owner}
 
     # Fetch sourcecode for tokens
-    sourcecode_responses = etherscan_get_token_sourcecode(unique_addresses);  # {token_address -> [is_proxy, is_verified, sourcecode]}
-
-    # Fetch bytecode for tokens (if proxy then get impl address from proxy slot (take into account different types of proxy) and fetch bytecode for impl address)
-    bytecode = call_fetch_bytecode(unique_addresses, sourcecode_responses);  # {token_address -> bytecode}
+    sourcecode_responses = etherscan_get_token_sourcecode(unique_addresses);  # {token_address -> [is_proxy, is_verified]}
 
     # Fetch getCode for deployers and owners, returns true if there is a code
     is_contract = call_fetch_code(pool_deployers, token_owners)  # {token_address -> bool}
 
     # Fetch tx data from Dune, if ownership is renounced (no owner in list) then fetch data for token deployer from creations
     # If address is a contract then calculate metrics on INCOMING txs, otherwise outgoing
-    dune_data = dune_fetch_data(pool_deployers, token_owners, creations, is_contract)  # {address -> [tx_count, address_age, gas_burnt]}
+    dune_data = dune_fetch_data(pool_deployers, token_owners, creations, is_contract)  # {address -> [tx_count, address_age, gas_burnt, bytes_deployed, smart_contracts_interacted]}
 
     # Fetch token holders from bitquery at pool creation block, calculate top_10_holders_percent and count num_holders
     bitquery_data = bitquery_fetch_data(unique_addresses, token_data)   # {address -> [top_10_holders_percent, num_holders]}
@@ -169,38 +166,6 @@ def calculate_metrics_for_token_list(csv_path):
         m['token0_ownership_renounced'] = (token0_owner is not None and token0_owner.lower() == '0x0000000000000000000000000000000000000000')
         m['token1_ownership_renounced'] = (token1_owner is not None and token1_owner.lower() == '0x0000000000000000000000000000000000000000')
 
-        # Analyze minting, burning, and pause capabilities using sourcecode/bytecode
-        token0_source = sourcecode_responses.get(token0_addr, {}).get('sourcecode')
-        token1_source = sourcecode_responses.get(token1_addr, {}).get('sourcecode')
-        token0_bytecode = bytecode.get(token0_addr)
-        token1_bytecode = bytecode.get(token1_addr)
-
-        # Minting
-        m['token0_minting_enabled'] = (
-            search_for_function(token0_source, token0_bytecode, 'mint')
-        )
-        m['token1_minting_enabled'] = (
-            search_for_function(token1_source, token1_bytecode, 'mint')
-        )
-
-        # Burning
-        m['token0_burning_enabled'] = (
-            search_for_function(token0_source, token0_bytecode, 'burn')
-        )
-        m['token1_burning_enabled'] = (
-            search_for_function(token1_source, token1_bytecode, 'burn') 
-        )
-
-        # Pausable
-        m['token0_pausable'] = (
-            search_for_function(token0_source, token0_bytecode, 'pause') or
-
-        )
-        m['token1_pausable'] = (
-            search_for_function(token1_source, token1_bytecode, 'pause') or
-
-        )
-
         # ---- Address activity metrics via Dune (with owner -> deployer fallback) ----
         pool_deployer = pool_deployers.get(pool['pool_address'])
         token0_deployer = creations.get(token0_addr, {}).get('token_deployer')
@@ -223,6 +188,17 @@ def calculate_metrics_for_token_list(csv_path):
         m['token0_owner_gas_burnt'] = dune_data.get(token0_owner_or_deployer, {}).get('gas_burnt') if token0_owner_or_deployer else None
         m['token1_owner_gas_burnt'] = dune_data.get(token1_owner_or_deployer, {}).get('gas_burnt') if token1_owner_or_deployer else None
         m['pool_deployer_gas_burnt'] = dune_data.get(pool_deployer, {}).get('gas_burnt') if pool_deployer else None
+
+        # Bytes Deployed
+        m['token0_owner_bytes_deployed'] = dune_data.get(token0_owner_or_deployer, {}).get('bytes_deployed') if token0_owner_or_deployer else None
+        m['token1_owner_bytes_deployed'] = dune_data.get(token1_owner_or_deployer, {}).get('bytes_deployed') if token1_owner_or_deployer else None
+        m['pool_deployer_bytes_deployed'] = dune_data.get(pool_deployer, {}).get('bytes_deployed') if pool_deployer else None
+
+        # Smart contracts interacted
+        m['token0_owner_smart_contracts_interacted'] = dune_data.get(token0_owner_or_deployer, {}).get('smart_contracts_interacted') if token0_owner_or_deployer else None
+        m['token1_owner_smart_contracts_interacted'] = dune_data.get(token1_owner_or_deployer, {}).get('smart_contracts_interacted') if token1_owner_or_deployer else None
+        m['pool_deployer_smart_contracts_interacted'] = dune_data.get(pool_deployer, {}).get('smart_contracts_interacted') if pool_deployer else None
+        
 
         # Set the number of holders
         m['token0_num_holders'] = bitquery_data.get(token0_addr, {}).get('num_holders')
