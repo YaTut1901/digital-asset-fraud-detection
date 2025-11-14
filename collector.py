@@ -3,15 +3,49 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import time
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 
 import requests  # HTTP client for The Graph, Etherscan, Dune, Bitquery, etc.
 # from web3 import Web3  # Uncomment when wiring up on-chain RPC calls
 
 
 logger = logging.getLogger(__name__)
+
+
+def log_call(func: Callable[..., Any]) -> Callable[..., Any]:
+    """
+    Decorator that applies standard logging around a function call.
+
+    - Logs function entry with argument summary.
+    - Logs execution duration on success.
+    - Logs full stack trace on exception and re-raises.
+    """
+
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        arg_preview = ", ".join(
+            [
+                *(repr(a) for a in args[:3]),
+                *(f"{k}={v!r}" for k, v in list(kwargs.items())[:3]),
+            ]
+        )
+        logger.info("Calling %s(%s)", func.__name__, arg_preview)
+        start = time.perf_counter()
+        try:
+            result = func(*args, **kwargs)
+        except Exception:
+            logger.exception("Error in %s", func.__name__)
+            raise
+        else:
+            duration_ms = (time.perf_counter() - start) * 1000.0
+            logger.info("Finished %s in %.2f ms", func.__name__, duration_ms)
+            return result
+
+    return wrapper
 
 
 # =========================
@@ -179,6 +213,7 @@ ReservesByPool = Dict[str, Dict[str, int]]
 # =========================
 
 
+@log_call
 def load_categorized_tokens(csv_path: Path) -> TokensByAddress:
     """
     Read tokens from categorized_tokens.csv.
@@ -189,6 +224,7 @@ def load_categorized_tokens(csv_path: Path) -> TokensByAddress:
     raise NotImplementedError
 
 
+@log_call
 def calculate_scam_rate(tokens: TokensByAddress) -> float:
     """
     Calculate scam rate as scams / all.
@@ -204,6 +240,7 @@ def calculate_scam_rate(tokens: TokensByAddress) -> float:
 # =========================
 
 
+@log_call
 def graph_batch_list_v2_pairs_for_tokens(tokens: TokensByAddress) -> PoolsByToken:
     """
     Query Uniswap V2 pairs from The Graph for all tokens.
@@ -214,6 +251,7 @@ def graph_batch_list_v2_pairs_for_tokens(tokens: TokensByAddress) -> PoolsByToke
     raise NotImplementedError
 
 
+@log_call
 def graph_batch_list_v3_pools_for_tokens(tokens: TokensByAddress) -> PoolsByToken:
     """
     Query Uniswap V3 pools from The Graph for all tokens.
@@ -224,6 +262,7 @@ def graph_batch_list_v3_pools_for_tokens(tokens: TokensByAddress) -> PoolsByToke
     raise NotImplementedError
 
 
+@log_call
 def graph_fetch_token_reserves(all_pools: Sequence[PoolInfo]) -> ReservesByPool:
     """
     Fetch token reserves for each pool at the pool creation block.
@@ -234,6 +273,7 @@ def graph_fetch_token_reserves(all_pools: Sequence[PoolInfo]) -> ReservesByPool:
     raise NotImplementedError
 
 
+@log_call
 def etherscan_get_contracts_creation(
     token_addresses: Sequence[str],
 ) -> CreationMap:
@@ -246,6 +286,7 @@ def etherscan_get_contracts_creation(
     raise NotImplementedError
 
 
+@log_call
 def graph_fetch_token_data(
     token_addresses: Sequence[str],
     creations: CreationMap,
@@ -259,6 +300,7 @@ def graph_fetch_token_data(
     raise NotImplementedError
 
 
+@log_call
 def graph_fetch_first_mint_data(all_pools: Sequence[PoolInfo]) -> MintDataMap:
     """
     Fetch first LP (mint) data per pool from The Graph.
@@ -269,6 +311,7 @@ def graph_fetch_first_mint_data(all_pools: Sequence[PoolInfo]) -> MintDataMap:
     raise NotImplementedError
 
 
+@log_call
 def call_fetch_deployers(all_pools: Sequence[PoolInfo]) -> Dict[str, str]:
     """
     Fetch pool deployer addresses via RPC (e.g., by inspecting transaction / logs).
@@ -279,6 +322,7 @@ def call_fetch_deployers(all_pools: Sequence[PoolInfo]) -> Dict[str, str]:
     raise NotImplementedError
 
 
+@log_call
 def call_fetch_current_owners(token_addresses: Sequence[str]) -> OwnerMap:
     """
     Fetch current owner for each token contract via RPC.
@@ -289,6 +333,7 @@ def call_fetch_current_owners(token_addresses: Sequence[str]) -> OwnerMap:
     raise NotImplementedError
 
 
+@log_call
 def etherscan_get_token_sourcecode(
     token_addresses: Sequence[str],
 ) -> SourceCodeMap:
@@ -299,6 +344,7 @@ def etherscan_get_token_sourcecode(
     raise NotImplementedError
 
 
+@log_call
 def call_fetch_code(
     pool_deployers: Mapping[str, str],
     token_owners: OwnerMap,
@@ -312,6 +358,7 @@ def call_fetch_code(
     raise NotImplementedError
 
 
+@log_call
 def dune_fetch_data(
     pool_deployers: Mapping[str, str],
     token_owners: OwnerMap,
@@ -328,6 +375,7 @@ def dune_fetch_data(
     raise NotImplementedError
 
 
+@log_call
 def bitquery_fetch_data(
     token_addresses: Sequence[str],
     token_data: TokenDataMap,
@@ -341,6 +389,7 @@ def bitquery_fetch_data(
     raise NotImplementedError
 
 
+@log_call
 def uniswap_web_fetch_data() -> Set[str]:
     """
     Fetch the set of verified tokens from https://tokens.uniswap.org/.
@@ -356,6 +405,7 @@ def uniswap_web_fetch_data() -> Set[str]:
 # =========================
 
 
+@log_call
 def calculate_label(
     token0_address: str,
     token1_address: str,
@@ -375,6 +425,7 @@ def calculate_label(
     raise NotImplementedError
 
 
+@log_call
 def build_unique_token_addresses(all_pools: Sequence[PoolInfo]) -> List[str]:
     """
     Extract a deduplicated list of token addresses from the full pool list.
@@ -383,6 +434,7 @@ def build_unique_token_addresses(all_pools: Sequence[PoolInfo]) -> List[str]:
     raise NotImplementedError
 
 
+@log_call
 def build_pool_metrics_row(
     pool: PoolInfo,
     chain_name: str,
@@ -414,6 +466,7 @@ def build_pool_metrics_row(
 # =========================
 
 
+@log_call
 def calculate_metrics_for_token_list(csv_path: Path) -> List[PoolMetricsRow]:
     """
     High-level orchestration for calculating metrics for the token list.
@@ -505,6 +558,7 @@ def calculate_metrics_for_token_list(csv_path: Path) -> List[PoolMetricsRow]:
     return results
 
 
+@log_call
 def write_metrics_to_csv(rows: Sequence[PoolMetricsRow], output_path: Path) -> None:
     """
     Serialize the final list of PoolMetricsRow objects into a CSV file.
@@ -513,6 +567,7 @@ def write_metrics_to_csv(rows: Sequence[PoolMetricsRow], output_path: Path) -> N
     raise NotImplementedError
 
 
+@log_call
 def main() -> None:
     """
     CLI entrypoint: load input CSV, compute metrics, and write them to disk.
