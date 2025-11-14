@@ -218,9 +218,4 @@ def calculate_metrics_for_token_list(csv_path):
         results.append(m)
 
     return results
-
-def search_for_function(sourcecode, bytecode, function_name):
-    function_defs = []; #  extract function names from sourcecode, if no sourcecode then extract selectors from bytecode and map to function names via selector databases
-    # feed into LLM with appropriate prompt to find any supply modifying functionality
-    # if not found any then execute static analysis tool on bytecode to find supply modification
 ```
