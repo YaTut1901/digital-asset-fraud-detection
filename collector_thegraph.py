@@ -823,8 +823,8 @@ def main() -> None:
     )
 
 
-    #graph_batch_list_v2_pairs_for_tokens(load_categorized_tokens(Path("categorized_tokens_v2.csv")), Path("output"))
-    #graph_batch_list_v3_pools_for_tokens(load_categorized_tokens(Path("categorized_tokens_v3.csv")), Path("output"))
+    #graph_batch_list_v2_pairs_for_tokens(load_categorized_tokens(Path("categorized_tokens_orig.csv")), Path("output"))
+    #graph_batch_list_v3_pools_for_tokens(load_categorized_tokens(Path("categorized_tokens_orig.csv")), Path("output"))
 
 
 if __name__ == "__main__":
