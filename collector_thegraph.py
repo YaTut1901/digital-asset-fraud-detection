@@ -16,7 +16,10 @@ from dataclasses import asdict
 from datetime import datetime
 
 
+
 import requests  # HTTP client for The Graph, Etherscan, Dune, Bitquery, etc.
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 # from web3 import Web3  # Uncomment when wiring up on-chain RPC calls
 
 
@@ -33,18 +36,30 @@ TOKEN_ADDRESS_PROCESSING_BATCH_SIZE = 300 # How many token addresses to include 
 def log_call(func: Callable[..., Any]) -> Callable[..., Any]:
     """
     Decorator that applies standard logging around a function call.
-
-    - Logs function entry with argument summary.
+    - Logs function entry with a summarized argument preview.
     - Logs execution duration on success.
     - Logs full stack trace on exception and re-raises.
     """
 
+    def _preview_arg(arg: Any) -> str:
+        """Create a sensible, summarized preview of a function argument."""
+        # For common large collections, show their type and size instead of content.
+        if isinstance(arg, (list, tuple, set)):
+            return f"<{type(arg).__name__} len={len(arg)}>"
+        if isinstance(arg, dict):
+            return f"<dict len={len(arg)}>"
+        
+        # For other types, use the default representation but truncate if it's too long.
+        s = repr(arg)
+        return s if len(s) < 120 else s[:117] + "..."
+
     @wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        # Use the new helper to create a clean preview for all arguments.
         arg_preview = ", ".join(
             [
-                *(repr(a) for a in args[:3]),
-                *(f"{k}={v!r}" for k, v in list(kwargs.items())[:3]),
+                *(_preview_arg(a) for a in args),
+                *(f"{k}={_preview_arg(v)}" for k, v in kwargs.items()),
             ]
         )
         logger.info("Calling %s(%s)", func.__name__, arg_preview)
@@ -61,6 +76,9 @@ def log_call(func: Callable[..., Any]) -> Callable[..., Any]:
 
     return wrapper
 
+# =========================
+# Generic caching helpers
+# =========================
 def _save_dict_to_json(
     data: Dict, output_dir: Path, base_filename: str
 ) -> None:
@@ -81,6 +99,133 @@ def _save_dict_to_json(
             
     except (IOError, TypeError) as e:
         logger.exception("Failed to save data to JSON file: %s", e)
+
+def _find_latest_cache_file(cache_dir: Path, base_filename: str) -> Optional[Path]:
+    """Finds the most recent timestamped cache file in a directory."""
+    latest_file = None
+    latest_datetime = datetime.min
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    for f in cache_dir.glob(f"{base_filename}_*.json"):
+        try:
+            parts = f.stem.split('_')
+            datetime_str = f"{parts[-2]}_{parts[-1]}"
+            file_datetime = datetime.strptime(datetime_str, "%Y%m%d_%H%M%S")
+            if file_datetime > latest_datetime:
+                latest_datetime = file_datetime
+                latest_file = f
+        except (ValueError, IndexError):
+            continue
+    return latest_file
+
+def _load_or_fetch_data(
+    cache_dir: Path,
+    base_filename: str,
+    fetch_function: Callable[..., Any],
+    reconstruct_class: Optional[type] = None,
+    **fetch_kwargs: Any,
+) -> Any:
+    """
+    Generic function to check for a cached JSON file. If found, loads it. 
+    Otherwise, runs the fetch_function to get the data and saves it.
+    """
+    # 1. Call the helper to find the latest file.
+    latest_cache_file = _find_latest_cache_file(cache_dir, base_filename)
+
+    if latest_cache_file:
+        logger.info("Found cache file. Loading data from: %s", latest_cache_file)
+        with open(latest_cache_file, 'r', encoding='utf-8') as f:
+            loaded_data = json.load(f)
+            
+            # If a reconstruction class is provided, rebuild the objects
+            if reconstruct_class:
+                # This handles both list-of-dicts and dict-of-dicts-of-lists
+                if isinstance(loaded_data, dict) and all(isinstance(v, list) for v in loaded_data.values()):
+                     reconstructed_data = defaultdict(list)
+                     for key, item_list in loaded_data.items():
+                         for item_dict in item_list:
+                             reconstructed_data[key].append(reconstruct_class(**item_dict))
+                     return dict(reconstructed_data)
+                elif isinstance(loaded_data, dict):
+                    return {key: reconstruct_class(**value) for key, value in loaded_data.items()}
+
+            return loaded_data # Return raw dicts if no reconstruction needed
+    else:
+        logger.info("No cache file found for '%s'. Fetching from API...", base_filename)
+        data_to_cache = fetch_function(**fetch_kwargs)
+        
+        # The save function needs the data in dict format, so we convert it if necessary
+        if reconstruct_class:
+            if isinstance(data_to_cache, dict) and all(isinstance(v, list) for v in data_to_cache.values()):
+                serializable_data = {
+                    token: [asdict(item) for item in items]
+                    for token, items in data_to_cache.items()
+                }
+                _save_dict_to_json(serializable_data, cache_dir, base_filename)
+            elif isinstance(data_to_cache, dict):
+                serializable_data = {key: asdict(value) for key, value in data_to_cache.items()}
+                _save_dict_to_json(serializable_data, cache_dir, base_filename)
+        else:
+            _save_dict_to_json(data_to_cache, cache_dir, base_filename)
+            
+        return data_to_cache
+
+# =========================
+# Labeling / metric helpers
+# =========================
+
+
+
+@log_call
+def _process_mints_for_mint_data_map(
+    first_mints: Dict[str, Dict[str, Any]],
+    all_pools: Sequence[PoolInfo],
+    save_to_dir: Optional[Path] = None,
+) -> MintDataMap:
+    """Transforms raw first mint data into the MintDataMap format and saves it."""
+    # NO loading logic. Just process and save.
+    pool_creation_map = {p.pool_address: p.pool_creation_timestamp for p in all_pools}
+    mint_data_map: MintDataMap = {}
+
+    for pool_address, mint_info in first_mints.items():
+        pool_creation_ts = pool_creation_map.get(pool_address)
+        if pool_creation_ts:
+            delta_seconds = max(0, mint_info["timestamp"] - pool_creation_ts)
+            mint_data_map[pool_address] = MintInfo(
+                first_pool_activity_time=int(delta_seconds / 60)
+            )
+
+    if save_to_dir:
+        serializable_data = {
+            addr: asdict(info) for addr, info in mint_data_map.items()
+        }
+        _save_dict_to_json(serializable_data, save_to_dir, "first_mint_data")
+
+    return mint_data_map
+
+@log_call
+def _process_mints_for_reserves_by_pool(
+    first_mints: Dict[str, Dict[str, Any]],
+    save_to_dir: Optional[Path] = None,
+) -> ReservesByPool:
+    """Transforms raw first mint data into the ReservesByPool format and saves it."""
+    # NO loading logic. Just process and save.
+    reserves_by_pool: ReservesByPool = {}
+    for pool_address, mint_info in first_mints.items():
+        try:
+            reserves_by_pool[pool_address] = {
+                mint_info["token0_address"]: int(float(mint_info["amount0"])),
+                mint_info["token1_address"]: int(float(mint_info["amount1"])),
+            }
+        except (ValueError, KeyError) as e:
+            logger.warning(
+                "Could not parse reserves for pool %s from mint data: %s", pool_address, e
+            )
+
+    if save_to_dir:
+        _save_dict_to_json(reserves_by_pool, save_to_dir, "initial_token_reserves")
+
+    return reserves_by_pool
 
 
 # =========================
@@ -314,9 +459,7 @@ def calculate_scam_rate(tokens: TokensByAddress) -> float:
 
 
 @log_call
-def graph_batch_list_v2_pairs_for_tokens(
-    tokens: TokensByAddress, save_to_dir: Optional[Path] = None
-) -> PoolsByToken:
+def graph_batch_list_v2_pairs_for_tokens(tokens: TokensByAddress) -> PoolsByToken:
     """
     Query Uniswap V2 pairs from The Graph for all tokens using the gateway.
 
@@ -398,20 +541,11 @@ def graph_batch_list_v2_pairs_for_tokens(
             if pool_info.token1_address in address_batch_set:
                 pools_by_token[pool_info.token1_address].append(pool_info)
 
-    if save_to_dir:
-        serializable_data = {
-            token: [asdict(pool) for pool in pools]
-            for token, pools in pools_by_token.items()
-        }
-        _save_dict_to_json(serializable_data, save_to_dir, "uniswap_v2_pairs")
-
     return dict(pools_by_token)
 
 
 @log_call
-def graph_batch_list_v3_pools_for_tokens(
-    tokens: TokensByAddress, save_to_dir: Optional[Path] = None
-) -> PoolsByToken:
+def graph_batch_list_v3_pools_for_tokens(tokens: TokensByAddress) -> PoolsByToken:
     """
     Query Uniswap V3 pools from The Graph for all tokens using the gateway.
 
@@ -496,26 +630,18 @@ def graph_batch_list_v3_pools_for_tokens(
             if pool_info.token1_address in address_batch_set:
                 pools_by_token[pool_info.token1_address].append(pool_info)
 
-    if save_to_dir:
-        serializable_data = {
-            token: [asdict(pool) for pool in pools]
-            for token, pools in pools_by_token.items()
-        }
-        # Use a different filename for the V3 cache
-        _save_dict_to_json(serializable_data, save_to_dir, "uniswap_v3_pools")
-
     return dict(pools_by_token)
 
+# Implementation for this function and graph_fetch_first_mint_data are similar, so we will fetch data for both in one go.
+# @log_call
+# def graph_fetch_token_reserves(all_pools: Sequence[PoolInfo]) -> ReservesByPool:
+#     """
+#     Fetch token reserves for each pool at the pool creation block.
 
-@log_call
-def graph_fetch_token_reserves(all_pools: Sequence[PoolInfo]) -> ReservesByPool:
-    """
-    Fetch token reserves for each pool at the pool creation block.
-
-    The result should be {pool_address -> {token_address -> reserve_int}}.
-    """
-    # TODO: Implement Graph queries (or RPC calls) to fetch reserves at creation.
-    raise NotImplementedError
+#     The result should be {pool_address -> {token_address -> reserve_int}}.
+#     """
+#     # TODO: Implement Graph queries (or RPC calls) to fetch reserves at creation.
+#     raise NotImplementedError
 
 
 @log_call
@@ -544,16 +670,115 @@ def graph_fetch_token_data(
     # TODO: Implement token-level data fetching via The Graph or direct RPC.
     raise NotImplementedError
 
-
-@log_call
-def graph_fetch_first_mint_data(all_pools: Sequence[PoolInfo]) -> MintDataMap:
+def _fetch_first_mints_for_pools(
+    all_pools: Sequence[PoolInfo],
+) -> Dict[str, Dict[str, Any]]:
     """
-    Fetch first LP (mint) data per pool from The Graph.
-
-    Should capture time from listing to first LP action in minutes.
+    Private helper to fetch the single earliest mint event for a list of pools.
+    This version includes a robust retry mechanism to handle network errors.
     """
-    # TODO: Implement query for first mint events per pool maybe with separate helper function for V2/V3.
-    raise NotImplementedError
+    if not all_pools:
+        return {}
+
+    pool_info_map = {p.pool_address: p for p in all_pools}
+    all_pool_addresses = list(pool_info_map.keys())
+    
+    first_mints = {}
+
+
+    # This will automatically retry on connection errors and common server errors (5xx)
+    retry_strategy = Retry(
+        total=5,  # Total number of retries
+        backoff_factor=2,  # Exponential backoff (e.g., 2s, 4s, 8s...)
+        status_forcelist=[429, 500, 502, 503, 504],  # HTTP status codes to retry on
+        allowed_methods=["HEAD", "GET", "OPTIONS", "POST"] # Add POST to the list of allowed methods
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session = requests.Session()
+    session.mount("https://", adapter)
+
+    #  Query V2 Subgraph 
+    logger.info("Fetching first mints from Uniswap V2 subgraph...")
+    for i in range(0, len(all_pool_addresses), TOKEN_ADDRESS_PROCESSING_BATCH_SIZE):
+        address_batch = all_pool_addresses[i : i + TOKEN_ADDRESS_PROCESSING_BATCH_SIZE]
+        query = """
+        query ($addresses: [String!]) {
+          mints(first: 1000, orderBy: timestamp, orderDirection: asc, where: { pair_in: $addresses }) {
+            timestamp, amount0, amount1, pair { id }
+          }
+        }
+        """
+        try:
+            # Use the session object instead of requests directly
+            response = session.post(
+                UNISWAP_V2_ENDPOINT,
+                json={"query": query, "variables": {"addresses": address_batch}},
+                timeout=45,  # Increased timeout slightly for complex queries
+            )
+            response.raise_for_status()
+            data = response.json().get("data", {}).get("mints", [])
+            for mint in data:
+                pool_id = mint["pair"]["id"]
+                if pool_id not in first_mints:
+                    first_mints[pool_id] = mint
+        except requests.RequestException as e:
+            # This will now only log an error after all retries have failed
+            logger.error("Failed to fetch V2 mints for batch starting at index %d after multiple retries: %s", i, e)
+        except Exception as e:
+            logger.error("A non-network error occurred during V2 mint fetching: %s", e)
+
+    # Query V3 Subgraph 
+    logger.info("Fetching first mints from Uniswap V3 subgraph...")
+    for i in range(0, len(all_pool_addresses), TOKEN_ADDRESS_PROCESSING_BATCH_SIZE):
+        address_batch = all_pool_addresses[i : i + TOKEN_ADDRESS_PROCESSING_BATCH_SIZE]
+        query = """
+        query ($addresses: [String!]) {
+          mints(first: 1000, orderBy: timestamp, orderDirection: asc, where: { pool_in: $addresses }) {
+            timestamp, amount0, amount1, pool { id }
+          }
+        }
+        """
+        try:
+            # Use the same session object
+            response = session.post(
+                UNISWAP_V3_ENDPOINT,
+                json={"query": query, "variables": {"addresses": address_batch}},
+                timeout=45,
+            )
+            response.raise_for_status()
+            data = response.json().get("data", {}).get("mints", [])
+            for mint in data:
+                pool_id = mint["pool"]["id"]
+                if pool_id not in first_mints:
+                    first_mints[pool_id] = mint
+        except requests.RequestException as e:
+            logger.error("Failed to fetch V3 mints for batch starting at index %d after multiple retries: %s", i, e)
+        except Exception as e:
+            logger.error("A non-network error occurred during V3 mint fetching: %s", e)
+            
+    # Combine and format the results 
+    processed_mints = {}
+    for pool_id, mint_data in first_mints.items():
+        pool_info = pool_info_map.get(pool_id)
+        if pool_info:
+            processed_mints[pool_id] = {
+                "timestamp": int(mint_data["timestamp"]),
+                "amount0": mint_data["amount0"],
+                "amount1": mint_data["amount1"],
+                "token0_address": pool_info.token0_address,
+                "token1_address": pool_info.token1_address,
+            }
+    return processed_mints
+# Implementation for this function and graph_fetch_token_reserves are similar, so we will fetch data for both in one go.
+# @log_call
+# def graph_fetch_first_mint_data(all_pools: Sequence[PoolInfo]) -> MintDataMap:
+#     """
+#     Fetch first LP (mint) data per pool from The Graph.
+
+#     Should capture time from listing to first LP action in minutes.
+#     """
+#     # TODO: Implement query for first mint events per pool maybe with separate helper function for V2/V3.
+#     raise NotImplementedError
 
 
 @log_call
@@ -729,10 +954,28 @@ def calculate_metrics_for_token_list(csv_path: Path) -> List[PoolMetricsRow]:
     chain_name = "ethereum"
     chain_id = 1
     dex_name = "Uniswap"
+    cache_dir = Path("output")
 
-    # ---- Step A: Fetch all Uniswap pools for each token (batch Graph queries) ----
-    v2_pairs_by_token = graph_batch_list_v2_pairs_for_tokens(tokens)
-    v3_pools_by_token = graph_batch_list_v3_pools_for_tokens(tokens)
+
+    v2_pairs_by_token = _load_or_fetch_data(
+        cache_dir=cache_dir,
+        base_filename="uniswap_v2_pairs",
+        fetch_function=graph_batch_list_v2_pairs_for_tokens,
+        reconstruct_class=PoolInfo, # <-- Tell it to reconstruct PoolInfo objects
+        tokens=tokens,              
+    )
+    
+    v3_pools_by_token = _load_or_fetch_data(
+        cache_dir=cache_dir,
+        base_filename="uniswap_v3_pools",
+        fetch_function=graph_batch_list_v3_pools_for_tokens,
+        reconstruct_class=PoolInfo, # <-- Tell it to reconstruct PoolInfo objects
+        tokens=tokens,
+    )
+    logger.info("Loaded %d V2 pools and %d V3 pools.",
+        sum(len(p) for p in v2_pairs_by_token.values()),
+        sum(len(p) for p in v3_pools_by_token.values()),
+    )
 
     # Build the global list of pools for processing
     all_pools: List[PoolInfo] = []
@@ -740,6 +983,22 @@ def calculate_metrics_for_token_list(csv_path: Path) -> List[PoolMetricsRow]:
         all_pools.extend(pools)
     for t_addr, pools in v3_pools_by_token.items():
         all_pools.extend(pools)
+
+
+    first_mints_data = _load_or_fetch_data(
+        cache_dir=cache_dir,
+        base_filename="first_mints_raw_data",  
+        fetch_function=_fetch_first_mints_for_pools,
+        all_pools=all_pools,
+    )
+    mint_data = _process_mints_for_mint_data_map(
+        first_mints_data, all_pools, save_to_dir=cache_dir
+    )
+
+    reserves_by_pool = _process_mints_for_reserves_by_pool(
+        first_mints_data, save_to_dir=cache_dir
+    )
+    logger.info("Successfully processed data for %d mints and %d reserve pools.", len(mint_data), len(reserves_by_pool))
 
     # Build a deduplicated set of unique token addresses from all pools
     unique_token_addresses = build_unique_token_addresses(all_pools)
@@ -751,7 +1010,7 @@ def calculate_metrics_for_token_list(csv_path: Path) -> List[PoolMetricsRow]:
     token_data = graph_fetch_token_data(unique_token_addresses, creations)
 
     # Fetch first LP data per pool
-    mint_data = graph_fetch_first_mint_data(all_pools)
+
 
     # Fetch pool deployers from RPC via multicall
     pool_deployers = call_fetch_deployers(all_pools)
@@ -772,7 +1031,6 @@ def calculate_metrics_for_token_list(csv_path: Path) -> List[PoolMetricsRow]:
     bitquery_data = bitquery_fetch_data(unique_token_addresses, token_data)
 
     # Fetch pool reserves in both tokens at the creation block
-    reserves_by_pool = graph_fetch_token_reserves(all_pools)
 
     # Fetch tokens from https://tokens.uniswap.org/
     uniswap_verified_tokens = uniswap_web_fetch_data()
@@ -802,6 +1060,126 @@ def calculate_metrics_for_token_list(csv_path: Path) -> List[PoolMetricsRow]:
 
     return results
 
+@log_call
+def calculate_metrics_for_token_list_thegraph(csv_path: Path) -> List[PoolMetricsRow]:
+    """
+    Test function for calculating metrics from thegraph onlylist.
+
+    """
+    # Load tokens from categorized_tokens.csv
+    tokens = load_categorized_tokens(csv_path)
+
+    # Calculate scam rate as scams / all
+    scam_rate = calculate_scam_rate(tokens)
+
+    # Constants
+    chain_name = "ethereum"
+    chain_id = 1
+    dex_name = "Uniswap"
+    cache_dir = Path("output")
+
+
+    v2_pairs_by_token = _load_or_fetch_data(
+        cache_dir=cache_dir,
+        base_filename="uniswap_v2_pairs",
+        fetch_function=graph_batch_list_v2_pairs_for_tokens,
+        reconstruct_class=PoolInfo, # <-- Tell it to reconstruct PoolInfo objects
+        tokens=tokens,              # Argument for the fetch function
+    )
+    
+    v3_pools_by_token = _load_or_fetch_data(
+        cache_dir=cache_dir,
+        base_filename="uniswap_v3_pools",
+        fetch_function=graph_batch_list_v3_pools_for_tokens,
+        reconstruct_class=PoolInfo, # <-- Tell it to reconstruct PoolInfo objects
+        tokens=tokens,
+    )
+    
+    logger.info(
+        "Loaded %d V2 pools and %d V3 pools.",
+        sum(len(p) for p in v2_pairs_by_token.values()),
+        sum(len(p) for p in v3_pools_by_token.values()),
+    )
+    # Build the global list of pools for processing
+    all_pools: List[PoolInfo] = []
+    for t_addr, pools in v2_pairs_by_token.items():
+        all_pools.extend(pools)
+    for t_addr, pools in v3_pools_by_token.items():
+        all_pools.extend(pools)
+    print(f"Total pools found: {len(all_pools)}")
+    # Build a deduplicated set of unique token addresses from all pools
+    #unique_token_addresses = build_unique_token_addresses(all_pools)
+
+    # Fetch creation timestamp and deployer for each unique token address
+    #creations = etherscan_get_contracts_creation(unique_token_addresses)
+
+    # Fetch token data (name, symbol, totalSupply, poolAmount, etc.)
+    #token_data = graph_fetch_token_data(unique_token_addresses, creations)
+
+    # Fetch first LP data per pool
+    first_mints_data = _load_or_fetch_data(
+        cache_dir=cache_dir,
+        base_filename="first_mints_raw_data",  
+        fetch_function=_fetch_first_mints_for_pools,
+        all_pools=all_pools,
+    )
+    mint_data = _process_mints_for_mint_data_map(
+        first_mints_data, all_pools, save_to_dir=cache_dir
+    )
+
+    reserves_by_pool = _process_mints_for_reserves_by_pool(
+        first_mints_data, save_to_dir=cache_dir
+    )
+    
+    logger.info("Successfully processed data for %d mints and %d reserve pools.", len(mint_data), len(reserves_by_pool))
+    # Fetch pool deployers from RPC via multicall
+    #pool_deployers = call_fetch_deployers(all_pools)
+
+    # Fetch token owners from RPC via multicall
+    #token_owners = call_fetch_current_owners(unique_token_addresses)
+
+    # Fetch source code metadata for tokens
+    #sourcecode_responses = etherscan_get_token_sourcecode(unique_token_addresses)
+
+    # Fetch getCode for deployers and owners, returns True if there is code
+    #is_contract = call_fetch_code(pool_deployers, token_owners)
+
+    # Fetch tx data from Dune
+    #dune_data = dune_fetch_data(pool_deployers, token_owners, creations, is_contract)
+
+    # Fetch token holders from Bitquery at pool creation block
+    #bitquery_data = bitquery_fetch_data(unique_token_addresses, token_data)
+
+    # Fetch pool reserves in both tokens at the creation block
+
+
+    # Fetch tokens from https://tokens.uniswap.org/
+    #uniswap_verified_tokens = uniswap_web_fetch_data()
+
+    # Assemble metrics per pool
+    # results: List[PoolMetricsRow] = []
+    # for pool in all_pools:
+    #     metrics_row = build_pool_metrics_row(
+    #         pool=pool,
+    #         chain_name=chain_name,
+    #         chain_id=chain_id,
+    #         dex_name=dex_name,
+    #         scam_rate=scam_rate,
+    #         tokens=tokens,
+    #         creations=creations,
+    #         token_data=token_data,
+    #         mint_data=mint_data,
+    #         pool_deployers=pool_deployers,
+    #         token_owners=token_owners,
+    #         sourcecode_responses=sourcecode_responses,
+    #         dune_data=dune_data,
+    #         bitquery_data=bitquery_data,
+    #         reserves_by_pool=reserves_by_pool,
+    #         uniswap_verified_tokens=uniswap_verified_tokens,
+    #     )
+    #     results.append(metrics_row)
+
+    # return results
 
 @log_call
 def write_metrics_to_csv(rows: Sequence[PoolMetricsRow], output_path: Path) -> None:
@@ -822,12 +1200,32 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    parser = argparse.ArgumentParser(
+        description="Collect static pool metrics for a categorized token list.",
+    )
+    parser.add_argument(
+        "--input-csv",
+        type=Path,
+        default=Path("categorized_tokens.csv"),
+        help="Path to categorized_tokens.csv file.",
+    )
+    parser.add_argument(
+        "--output-csv",
+        type=Path,
+        default=Path("static_pool_metrics.csv"),
+        help="Path where the output metrics CSV will be written.",
+    )
+    args = parser.parse_args()
+    # function below is executed for testing with thegraph list only
+    calculate_metrics_for_token_list(Path("csv\\categorized_tokens_orig.csv"))
 
-    #graph_batch_list_v2_pairs_for_tokens(load_categorized_tokens(Path("categorized_tokens_orig.csv")), Path("output"))
-    #graph_batch_list_v3_pools_for_tokens(load_categorized_tokens(Path("categorized_tokens_orig.csv")), Path("output"))
+    logger.info("Loading tokens from %s", args.input_csv)
+    rows = calculate_metrics_for_token_list(args.input_csv)
+
+    logger.info("Writing %d pool metrics rows to %s", len(rows), args.output_csv)
+    write_metrics_to_csv(rows, args.output_csv)
 
 
 if __name__ == "__main__":
     main()
-
 
