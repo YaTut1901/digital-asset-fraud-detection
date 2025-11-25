@@ -357,22 +357,181 @@ def call_fetch_code(
     # TODO: Implement eth_getCode calls (possibly via multicall) for all relevant addresses.
     raise NotImplementedError
 
+DUNE_API_KEY = "z2S74C4tzrrrERLLFfqcLOfPKj0ZnD4B" 
+dune = DuneClient(api_key=DUNE_API_KEY)
+PARAMETERIZED_QUERY_ID = 6223819
+
+# --- Допоміжна функція: Отримання метрик Dune ---
+def fetch_dune_metrics(address: str, is_contract: bool, start_time: str, end_time: str) -> Optional[Dict[str, Any]]:
+    """
+    Виконує запит Dune та очікує результатів для однієї адреси та часового сегменту.
+    """
+    start_dt = datetime.fromisoformat(start_time)
+    end_dt = datetime.fromisoformat(end_time)
+
+    params = [
+        QueryParameter("address", ParameterType.TEXT, address),
+        # Dune SQL очікує NUMBER, тому конвертуємо True/False в 1/0
+        QueryParameter("is_contract", ParameterType.NUMBER, int(is_contract)), 
+        QueryParameter("start_time", ParameterType.DATE, start_dt),
+        QueryParameter("end_time", ParameterType.DATE, end_dt),
+    ]
+
+    query = QueryBase(
+        query_id=PARAMETERIZED_QUERY_ID,
+        params=params
+    )
+
+    # 1. Запустити запит
+    try:
+        exec_result = dune.execute_query(query)
+    except Exception as e:
+        print(f"ПОМИЛКА ЗАПУСКУ DUNE для {address}: {e}")
+        return None
+
+    # 2. Очікувати виконання
+    while True:
+        try:
+            final = dune.get_execution_results(exec_result.execution_id)
+        except Exception as e:
+            print(f"ПОМИЛКА ОТРИМАННЯ СТАНУ для {address}: {e}")
+            return None # Завершуємо цикл, якщо не можемо отримати стан
+
+        # Перевіряємо стан
+        if final.state == ExecutionState.COMPLETED:
+            break
+        elif final.state == ExecutionState.FAILED:
+            print(f"ПОМИЛКА ВИКОНАННЯ DUNE для {address}: {final.error}")
+            return None
+        
+        # Додаткові стани, які можна ігнорувати: PENDING, EXECUTING
+        # print(f"[{address}] Статус: {final.state.name}...") 
+        time.sleep(0.4)
+
+    # 3. Дістати результати
+    rows = final.get_rows()
+    df = pd.DataFrame(rows)
+
+    if df.empty or len(df.columns) == 0:
+        return None
+
+    # Припускаємо, що запит повертає один рядок метрик
+    result_dict = df.iloc[0].to_dict()
+    
+    # Гарантуємо, що ключові числові поля не є None (встановлюємо 0)
+    numeric_fields = [
+        "tx_count", "gas_burnt", "address_age_minutes", 
+        "bytes_deployed", "smart_contracts_interacted"
+    ]
+    for field in numeric_fields:
+        result_dict[field] = result_dict.get(field) or 0
+    
+    # print(f"[{address}] Метрики Dune: {result_dict}")
+    
+    return result_dict
 
 @log_call
 def dune_fetch_data(
-    pool_deployers: Mapping[str, str],
-    token_owners: OwnerMap,
-    creations: CreationMap,
-    is_contract: IsContractMap,
-) -> AddressActivityMap:
+    pool_deployers: Dict[str, str], 
+    token_owners: Dict[str, Optional[str]], 
+    creations: Dict[str, Dict[str, Any]], 
+    is_contract: Dict[str, bool]
+) -> pd.DataFrame:
     """
-    Fetch aggregated tx data from Dune for each relevant address.
+    Збирає адреси, виконує запити Dune для всіх часових сегментів 
+    і агрегує результати у зведений DataFrame.
 
-    If ownership is renounced (no owner in list), fall back to token deployer from creations.
-    For contract addresses, compute metrics on INCOMING txs; otherwise on outgoing.
+    :param pool_deployers: Dict[PoolID, DeployerAddress]
+    :param token_owners: Dict[TokenAddress, OwnerAddress|None]
+    :param creations: Dict[TokenAddress, {"creation_timestamp": int, "token_deployer": str}]
+    :param is_contract: Dict[Address, bool]
+    :return: Зведений DataFrame з агрегованими метриками Dune
     """
-    # TODO: Implement Dune SQL/API queries and transform into AddressActivityMap.
-    raise NotImplementedError
+    
+    ## 1. ФОРМУЄМО СПИСОК ВСІХ АДРЕС
+    addresses = set()
+    addresses.update(pool_deployers.values())
+    addresses.update(token_owners.keys())
+    addresses.update(filter(None, token_owners.values())) # Додаємо власників, які не None
+    for t, meta in creations.items():
+        addresses.add(t)
+        addresses.add(meta["token_deployer"])
+    
+    # Видаляємо None, якщо випадково потрапив
+    addresses.discard(None) 
+    
+    if not addresses:
+        print("Не знайдено жодної адреси для запиту.")
+        return pd.DataFrame()
+
+    ## 2. ЧАСОВІ СЕГМЕНТИ
+    TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+    now = datetime.now()
+    
+    # Використовуємо ваш оригінальний сегмент "0-9 років"
+    time_chunks = [
+        {
+            "label": "0-9",
+            "start": (now - timedelta(days=9 * 365)).strftime(TIME_FORMAT),
+            "end": now.strftime(TIME_FORMAT)
+        },
+        # Можна додати інші сегменти, якщо потрібно, наприклад:
+        # {
+        #     "label": "3-6",
+        #     "start": (now - timedelta(days=6 * 365)).strftime(TIME_FORMAT),
+        #     "end": (now - timedelta(days=3 * 365)).strftime(TIME_FORMAT)
+        # }
+    ]
+
+    ## 3. ЗАПУСК ПАЙПЛАЙНА ТА АГРЕГАЦІЯ
+    summary_rows = {}
+    
+    print(f"--- Запуск Dune-запитів для {len(addresses)} адрес(и/и) ---")
+
+    for chunk in time_chunks:
+        print(f"\n Сегмент: {chunk['label']} ({chunk['start']} до {chunk['end']})")
+        
+        for addr in addresses:
+            # Визначаємо, чи є адреса контрактом, за замовчуванням False
+            is_contr = is_contract.get(addr, False) 
+            
+            # Отримання метрик
+            m = fetch_dune_metrics(addr, is_contr, chunk["start"], chunk["end"])
+            
+            if m is None:
+                # print(f"[{addr}] Немає даних для сегменту {chunk['label']}")
+                continue
+
+            # Агрегація
+            # Поля, які потрібно агрегувати: tx_count, gas_burnt
+            # Поля, які НЕ потрібно агрегувати (беремо з першого/останнього сегменту): address_age_minutes, bytes_deployed, smart_contracts_interacted
+            
+            if addr not in summary_rows:
+                # Перший сегмент - ініціалізуємо
+                summary_rows[addr] = {
+                    "address": addr,
+                    "tx_count": m["tx_count"],
+                    "gas_burnt": m["gas_burnt"],
+                    "address_age_minutes": m["address_age_minutes"],
+                    "bytes_deployed": m["bytes_deployed"],
+                    "smart_contracts_interacted": m["smart_contracts_interacted"],
+                    "is_contract": is_contr
+                }
+            else:
+                # Наступні сегменти - додаємо лише агреговані метрики
+                summary_rows[addr]["tx_count"] += m["tx_count"]
+                summary_rows[addr]["gas_burnt"] += m["gas_burnt"]
+                
+    ## 4. СТВОРЕННЯ ЗВЕДЕНОГО DF
+    summary_df = pd.DataFrame(list(summary_rows.values()))
+    
+    # Встановлення "address" як першої колонки для кращої читабельності
+    if not summary_df.empty:
+        cols = ['address', 'is_contract'] + [col for col in summary_df.columns if col not in ['address', 'is_contract']]
+        summary_df = summary_df[cols]
+    #print(summary_df)
+    
+    return summary_df
 
 
 @log_call
