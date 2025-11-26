@@ -318,8 +318,7 @@ class PoolMetricsRow:
     dex_name: str
     chain_name: str
     chain_id: int
-    liquidity_provided: bool
-    first_pool_activity_time: Optional[int]
+    first_pool_activity_time: int
 
     token0_address: str
     token1_address: str
@@ -996,13 +995,13 @@ def build_pool_metrics_row(
     token0_onchain = token_data.get(pool.token0_address)
     token1_onchain = token_data.get(pool.token1_address)
     first_mint_info = mint_data.get(pool.pool_address)
+    activity_time = first_mint_info.first_pool_activity_time if first_mint_info else -1
     token0_source = sourcecode_responses.get(pool.token0_address)
     token1_source = sourcecode_responses.get(pool.token1_address)
     pool_deployer_addr = pool_deployers.get(pool.pool_address)
     pool_deployer_dune = dune_data.get(pool_deployer_addr) if pool_deployer_addr else None
     token0_bitquery = bitquery_data.get(pool.token0_address)
     token1_bitquery = bitquery_data.get(pool.token1_address)
-    has_liquidity = int(pool.pool_address in mint_data)
 
     
     # Helper to safely look up Dune metrics, which requires multiple dictionary lookups
@@ -1018,8 +1017,7 @@ def build_pool_metrics_row(
         dex_name=dex_name,
         chain_name=chain_name,
         chain_id=chain_id,
-        liquidity_provided=has_liquidity,
-        first_pool_activity_time=first_mint_info.first_pool_activity_time if first_mint_info else None,
+        first_pool_activity_time=activity_time,
         token0_address=pool.token0_address,
         token1_address=pool.token1_address,
         token0_name=pool.token0_name,
