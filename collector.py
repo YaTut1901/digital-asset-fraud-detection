@@ -31,7 +31,7 @@ UNISWAP_V3_SUBGRAPH_ID = "5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV"
 UNISWAP_V2_ENDPOINT = f"https://gateway.thegraph.com/api/{GRAPH_API_KEY}/subgraphs/id/{UNISWAP_V2_SUBGRAPH_ID}"
 UNISWAP_V3_ENDPOINT =f"https://gateway.thegraph.com/api/{GRAPH_API_KEY}/subgraphs/id/{UNISWAP_V3_SUBGRAPH_ID}"
 THE_GRAPH_API_BATCH_SIZE = 1000  # Max entities per query
-TOKEN_ADDRESS_PROCESSING_BATCH_SIZE = 300 # How many token addresses to include in a single GraphQL query
+TOKEN_ADDRESS_PROCESSING_BATCH_SIZE = 50 # How many token addresses to include in a single GraphQL query
 
 def log_call(func: Callable[..., Any]) -> Callable[..., Any]:
     """
@@ -675,12 +675,14 @@ def graph_fetch_token_data(
     logger.warning("graph_fetch_token_data is not implemented. Returning empty data.")
     return {}
 
+@log_call
 def _fetch_first_mints_for_pools(
     all_pools: Sequence[PoolInfo],
 ) -> Dict[str, Dict[str, Any]]:
     """
     Private helper to fetch the single earliest mint event for a list of pools.
-    This version includes a robust retry mechanism to handle network errors.
+    This version uses GraphQL aliases to correctly fetch the first mint for each
+    pool individually within a batched request.
     """
     if not all_pools:
         return {}
@@ -690,8 +692,6 @@ def _fetch_first_mints_for_pools(
     
     first_mints = {}
 
-
-    # This will automatically retry on connection errors and common server errors (5xx)
     retry_strategy = Retry(
         total=5,  # Total number of retries
         backoff_factor=2,  # Exponential backoff (e.g., 2s, 4s, 8s...)
@@ -702,66 +702,89 @@ def _fetch_first_mints_for_pools(
     session = requests.Session()
     session.mount("https://", adapter)
 
-    #  Query V2 Subgraph 
-    logger.info("Fetching first mints from Uniswap V2 subgraph...")
+    # --- Query V2 Subgraph using Aliases ---
+    logger.info("Fetching first mints from Uniswap V2 subgraph using aliasing...")
     for i in range(0, len(all_pool_addresses), TOKEN_ADDRESS_PROCESSING_BATCH_SIZE):
         address_batch = all_pool_addresses[i : i + TOKEN_ADDRESS_PROCESSING_BATCH_SIZE]
-        query = """
-        query ($addresses: [String!]) {
-          mints(first: 1000, orderBy: timestamp, orderDirection: asc, where: { pair_in: $addresses }) {
-            timestamp, amount0, amount1, pair { id }
-          }
-        }
-        """
+        
+        # Dynamically build the query with aliases
+        query_parts = []
+        for j, addr in enumerate(address_batch):
+            # The alias 'q_j' allows us to ask a separate question for each pool
+            query_parts.append(f"""
+            q{j}: mints(
+              first: 1,
+              orderBy: timestamp,
+              orderDirection: asc,
+              where: {{ pair: "{addr.lower()}" }}
+            ) {{
+              timestamp
+              amount0
+              amount1
+              pair {{ id }}
+            }}
+            """)
+        
+        full_query = "query {" + " ".join(query_parts) + "}"
+        
         try:
-            # Use the session object instead of requests directly
             response = session.post(
                 UNISWAP_V2_ENDPOINT,
-                json={"query": query, "variables": {"addresses": address_batch}},
-                timeout=45,  # Increased timeout slightly for complex queries
+                json={"query": full_query}, # No variables needed
+                timeout=60, # Increase timeout slightly for these complex queries
             )
             response.raise_for_status()
-            data = response.json().get("data", {}).get("mints", [])
-            for mint in data:
-                pool_id = mint["pair"]["id"]
-                if pool_id not in first_mints:
-                    first_mints[pool_id] = mint
+            data = response.json().get("data", {})
+            if data:
+                for alias, mint_list in data.items():
+                    if mint_list: # Check if any mints were returned for this alias
+                        mint = mint_list[0]
+                        pool_id = mint["pair"]["id"]
+                        first_mints[pool_id] = mint
         except requests.RequestException as e:
-            # This will now only log an error after all retries have failed
-            logger.error("Failed to fetch V2 mints for batch starting at index %d after multiple retries: %s", i, e)
-        except Exception as e:
-            logger.error("A non-network error occurred during V2 mint fetching: %s", e)
+            logger.error("Failed to fetch V2 mints for batch starting at index %d: %s", i, e)
 
-    # Query V3 Subgraph 
-    logger.info("Fetching first mints from Uniswap V3 subgraph...")
+    # --- Query V3 Subgraph using Aliases ---
+    logger.info("Fetching first mints from Uniswap V3 subgraph using aliasing...")
     for i in range(0, len(all_pool_addresses), TOKEN_ADDRESS_PROCESSING_BATCH_SIZE):
         address_batch = all_pool_addresses[i : i + TOKEN_ADDRESS_PROCESSING_BATCH_SIZE]
-        query = """
-        query ($addresses: [String!]) {
-          mints(first: 1000, orderBy: timestamp, orderDirection: asc, where: { pool_in: $addresses }) {
-            timestamp, amount0, amount1, pool { id }
-          }
-        }
-        """
+        
+        query_parts = []
+        for j, addr in enumerate(address_batch):
+            query_parts.append(f"""
+            q{j}: mints(
+              first: 1,
+              orderBy: timestamp,
+              orderDirection: asc,
+              where: {{ pool: "{addr.lower()}" }}
+            ) {{
+              timestamp
+              amount0
+              amount1
+              pool {{ id }}
+            }}
+            """)
+            
+        full_query = "query {" + " ".join(query_parts) + "}"
+        
         try:
-            # Use the same session object
             response = session.post(
                 UNISWAP_V3_ENDPOINT,
-                json={"query": query, "variables": {"addresses": address_batch}},
-                timeout=45,
+                json={"query": full_query},
+                timeout=60,
             )
             response.raise_for_status()
-            data = response.json().get("data", {}).get("mints", [])
-            for mint in data:
-                pool_id = mint["pool"]["id"]
-                if pool_id not in first_mints:
-                    first_mints[pool_id] = mint
+            data = response.json().get("data", {})
+            if data:
+                for alias, mint_list in data.items():
+                    if mint_list:
+                        mint = mint_list[0]
+                        pool_id = mint["pool"]["id"]
+                        first_mints[pool_id] = mint # This will overwrite V2 if a V3 mint is found
         except requests.RequestException as e:
-            logger.error("Failed to fetch V3 mints for batch starting at index %d after multiple retries: %s", i, e)
-        except Exception as e:
-            logger.error("A non-network error occurred during V3 mint fetching: %s", e)
-            
-    # Combine and format the results 
+            logger.error("Failed to fetch V3 mints for batch starting at index %d: %s", i, e)
+
+    # --- Combine and format the results (this part is unchanged) ---
     processed_mints = {}
     for pool_id, mint_data in first_mints.items():
         pool_info = pool_info_map.get(pool_id)
