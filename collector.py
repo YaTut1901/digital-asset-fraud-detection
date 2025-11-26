@@ -318,7 +318,7 @@ class PoolMetricsRow:
     dex_name: str
     chain_name: str
     chain_id: int
-
+    liquidity_provided: bool
     first_pool_activity_time: Optional[int]
 
     token0_address: str
@@ -983,7 +983,7 @@ def build_pool_metrics_row(
     bitquery_data: HolderDistributionMap,
     reserves_by_pool: ReservesByPool,
     uniswap_verified_tokens: Set[str],
-    pool_counts: Dict[str, int],
+    pool_counts: Dict[str, int]
 ) -> PoolMetricsRow:
     """
     Assemble a fully-populated PoolMetricsRow for a single pool using all
@@ -1002,6 +1002,8 @@ def build_pool_metrics_row(
     pool_deployer_dune = dune_data.get(pool_deployer_addr) if pool_deployer_addr else None
     token0_bitquery = bitquery_data.get(pool.token0_address)
     token1_bitquery = bitquery_data.get(pool.token1_address)
+    has_liquidity = int(pool.pool_address in mint_data)
+
     
     # Helper to safely look up Dune metrics, which requires multiple dictionary lookups
     def get_dune_metric(token_addr: str, metric: str) -> Optional[int | float]:
@@ -1016,6 +1018,7 @@ def build_pool_metrics_row(
         dex_name=dex_name,
         chain_name=chain_name,
         chain_id=chain_id,
+        liquidity_provided=has_liquidity,
         first_pool_activity_time=first_mint_info.first_pool_activity_time if first_mint_info else None,
         token0_address=pool.token0_address,
         token1_address=pool.token1_address,
